@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard Mantenimiento de Flota</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="css/dashboard.css">
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2"></script>
+</head>
+<body>
+
+<div id="loading" class="loading-screen">
+    <div class="loading-spinner"></div>
+    <p>Cargando dashboard...</p>
+</div>
+
+<nav class="dash-tabs" id="dashTabs" style="display: none;">
+    <a href="#" class="tab active" data-seccion="resumen"><i class="fas fa-chart-pie"></i> Resumen</a>
+    <a href="#" class="tab" data-seccion="equipos"><i class="fas fa-truck"></i> Equipos</a>
+    <a href="#" class="tab" data-seccion="sistemas"><i class="fas fa-gears"></i> Sistemas</a>
+    <a href="#" class="tab" data-seccion="tecnicos"><i class="fas fa-user-cog"></i> Técnicos</a>
+    <a href="#" class="tab" data-seccion="detalle"><i class="fas fa-table"></i> Detalle</a>
+</nav>
+
+<!-- RESUMEN -->
+<div id="resumen" class="dashboard-section" style="display:none;">
+    <header class="exec-header">
+        <div class="exec-title">
+            <div class="exec-logo"><i class="fas fa-chart-pie"></i></div>
+            <div><h1>Resumen General</h1><span class="exec-subtitle">Intervenciones · Turnos · Estado</span></div>
+        </div>
+        <div class="exec-actions"><span class="exec-date"><i class="fas fa-calendar-alt"></i> <span id="fechaActual1"></span></span></div>
+    </header>
+    <section class="kpi-row" id="kpiResumen"></section>
+    <section class="filters-row">
+        <div class="filter-chip"><i class="fas fa-clock"></i><select id="filterTurnoR" class="filter-select"><option value="">Turno</option></select></div>
+        <div class="filter-chip"><i class="fas fa-layer-group"></i><select id="filterTipoR" class="filter-select"><option value="">Tipo</option></select></div>
+        <div class="filter-chip"><i class="fas fa-cog"></i><select id="filterSistemaR" class="filter-select"><option value="">Sistema</option></select></div>
+        <button id="clearResumen" class="btn-clear-chips"><i class="fas fa-eraser"></i> Limpiar</button>
+    </section>
+    <section class="charts-exec" id="chartsResumen"></section>
+</div>
+
+<!-- EQUIPOS -->
+<div id="equipos" class="dashboard-section" style="display:none;">
+    <header class="exec-header">
+        <div class="exec-title">
+            <div class="exec-logo"><i class="fas fa-truck"></i></div>
+            <div><h1>Equipos</h1><span class="exec-subtitle">Fallos · Estado · Horómetro</span></div>
+        </div>
+        <div class="exec-actions"><span class="exec-date"><i class="fas fa-calendar-alt"></i> <span id="fechaActual2"></span></span></div>
+    </header>
+    <section class="kpi-row" id="kpiEquipos"></section>
+    <section class="filters-row">
+        <div class="filter-chip"><i class="fas fa-clock"></i><select id="filterTurnoE" class="filter-select"><option value="">Turno</option></select></div>
+        <div class="filter-chip"><i class="fas fa-layer-group"></i><select id="filterTipoE" class="filter-select"><option value="">Tipo</option></select></div>
+        <div class="filter-chip"><i class="fas fa-truck"></i><select id="filterEquipoE" class="filter-select"><option value="">Equipo</option></select></div>
+        <button id="clearEquipos" class="btn-clear-chips"><i class="fas fa-eraser"></i> Limpiar</button>
+    </section>
+    <section class="charts-exec" id="chartsEquipos"></section>
+</div>
+
+<!-- SISTEMAS -->
+<div id="sistemas" class="dashboard-section" style="display:none;">
+    <header class="exec-header">
+        <div class="exec-title">
+            <div class="exec-logo"><i class="fas fa-gears"></i></div>
+            <div><h1>Sistemas</h1><span class="exec-subtitle">Tiempos · Fallas · Repuestos</span></div>
+        </div>
+        <div class="exec-actions"><span class="exec-date"><i class="fas fa-calendar-alt"></i> <span id="fechaActual3"></span></span></div>
+    </header>
+    <section class="kpi-row" id="kpiSistemas"></section>
+    <section class="filters-row">
+        <div class="filter-chip"><i class="fas fa-clock"></i><select id="filterTurnoS" class="filter-select"><option value="">Turno</option></select></div>
+        <div class="filter-chip"><i class="fas fa-cog"></i><select id="filterSistemaS" class="filter-select"><option value="">Sistema</option></select></div>
+        <button id="clearSistemas" class="btn-clear-chips"><i class="fas fa-eraser"></i> Limpiar</button>
+    </section>
+    <section class="charts-exec" id="chartsSistemas"></section>
+</div>
+
+<!-- TÉCNICOS -->
+<div id="tecnicos" class="dashboard-section" style="display:none;">
+    <header class="exec-header">
+        <div class="exec-title">
+            <div class="exec-logo"><i class="fas fa-user-cog"></i></div>
+            <div><h1>Técnicos</h1><span class="exec-subtitle">Ranking · Intervenciones</span></div>
+        </div>
+        <div class="exec-actions"><span class="exec-date"><i class="fas fa-calendar-alt"></i> <span id="fechaActual4"></span></span></div>
+    </header>
+    <section class="kpi-row" id="kpiTecnicos"></section>
+    <section class="filters-row">
+        <div class="filter-chip"><i class="fas fa-clock"></i><select id="filterTurnoT" class="filter-select"><option value="">Turno</option></select></div>
+        <div class="filter-chip"><i class="fas fa-layer-group"></i><select id="filterTipoT" class="filter-select"><option value="">Tipo</option></select></div>
+        <button id="clearTecnicos" class="btn-clear-chips"><i class="fas fa-eraser"></i> Limpiar</button>
+    </section>
+    <section class="charts-exec" id="chartsTecnicos"></section>
+</div>
+
+<!-- DETALLE -->
+<div id="detalle" class="dashboard-section" style="display:none;">
+    <header class="exec-header">
+        <div class="exec-title">
+            <div class="exec-logo"><i class="fas fa-table"></i></div>
+            <div><h1>Detalle de Intervenciones</h1><span class="exec-subtitle">Registro completo</span></div>
+        </div>
+        <div class="exec-actions"><span class="exec-date"><i class="fas fa-calendar-alt"></i> <span id="fechaActual5"></span></span></div>
+    </header>
+    <section class="filters-row">
+        <div class="filter-chip"><i class="fas fa-clock"></i><select id="filterTurnoD" class="filter-select"><option value="">Turno</option></select></div>
+        <div class="filter-chip"><i class="fas fa-layer-group"></i><select id="filterTipoD" class="filter-select"><option value="">Tipo</option></select></div>
+        <div class="filter-chip"><i class="fas fa-cog"></i><select id="filterSistemaD" class="filter-select"><option value="">Sistema</option></select></div>
+        <div class="filter-chip"><i class="fas fa-user-cog"></i><select id="filterTecnicoD" class="filter-select"><option value="">Técnico</option></select></div>
+        <button id="clearDetalle" class="btn-clear-chips"><i class="fas fa-eraser"></i> Limpiar</button>
+    </section>
+    <section class="charts-exec">
+        <div class="chart-exec-card chart-full-table">
+            <div class="chart-exec-header"><i class="fas fa-list chart-icon"></i><h3>Detalle completo</h3></div>
+            <div id="tablaDetalle" class="tabla-scroll"></div>
+        </div>
+    </section>
+</div>
+
+<script src="js/dashboard.js"></script>
+</body>
+</html>
