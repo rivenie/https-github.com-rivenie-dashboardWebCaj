@@ -1,56 +1,91 @@
+/* ==========================================================
+   Dashboard Transporte de Materiales — Volquetes
+   ========================================================== */
+
 const SUPABASE_URL = "https://qhqrnnkuhsaszonippnj.supabase.co";
 const SUPABASE_KEY = "sb_publishable_aGjT0aecqNHf96Tm7QLMtw_qjCKs5n3";
 const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
+const C = {
+  cyan: "#FFC93C", blue: "#F5A524", orange: "#E8590C", green: "#37B24D", purple: "#A06BFF",
+  other: "#3A4766", text: "#F5F6F8", dim: "#9CA3AF", faint: "#6B7280",
+  grid: "rgba(156, 163, 175, 0.10)", panel: "#101217",
+};
+const PALETTE = [C.cyan, C.orange, C.green, C.purple, C.blue];
+
 Chart.register(ChartDataLabels);
-Chart.defaults.plugins.datalabels = {
-  color: "#B85F00",
-  font: { family: "Inter", size: 10, weight: "600" },
-  anchor: "end", align: "end", offset: 2, clamp: true,
-};
+Chart.defaults.font.family = "'IBM Plex Sans', system-ui, sans-serif";
+Chart.defaults.font.size = 11;
+Chart.defaults.color = C.dim;
+Chart.defaults.animation.duration = 450;
+Chart.defaults.plugins.datalabels.display = false;
+Chart.defaults.plugins.legend.display = false;
 
-let data_mant = [];
-let charts = {};
+const state = { transporte: [] };
+const cols = {};
+const charts = {};
+let ultimo = [];
+let listenersReady = false;
 
-const COLORS = {
-  primary: "#E8830C", primaryDark: "#B85F00", primaryLight: "#F7D3A1",
-  accent: "#F2B233", earth: "#5A5F6A", dark: "#2C3038", orange: "#D9620C",
-  textDim: "#6B7280",
-};
-const PALETTE = [COLORS.primary, COLORS.accent, COLORS.primaryDark, COLORS.earth, COLORS.orange, COLORS.primaryLight];
+const fmt = (v, d = 0) => Number(v).toLocaleString("es-PE", { maximumFractionDigits: d, minimumFractionDigits: 0 });
+const round = (v, d = 2) => Number(Number(v).toFixed(d));
+const clamp = (v, a = 0, b = 100) => Math.min(b, Math.max(a, v));
+const truncar = (s, n = 30) => (s.length > n ? s.slice(0, n - 1) + "…" : s);
+const $ = (id) => document.getElementById(id);
 
-["fechaActual1","fechaActual2","fechaActual3","fechaActual4","fechaActual5"].forEach(id => {
-  const el = document.getElementById(id);
-  if (el) el.textContent = new Date().toLocaleDateString("es-PE", { day: "2-digit", month: "short", year: "numeric" });
-});
-
-// HELPERS
 function col(data, clave) {
   if (!data || data.length === 0) return null;
   const keys = Object.keys(data[0]);
-  return keys.find(k => k.trim().toLowerCase() === clave.trim().toLowerCase());
+  return keys.find((k) => k.trim().toLowerCase() === clave.trim().toLowerCase());
 }
 function norm(v) { return v !== undefined && v !== null ? v.toString().trim() : ""; }
 function num(v) {
   if (typeof v === "number") return v;
   if (!v) return 0;
-  return parseFloat(v.toString().replace(/[^0-9.-]/g, "")) || 0;
+  const s = v.toString().replace(",", ".").replace(/[^0-9.-]/g, "");
+  return parseFloat(s) || 0;
 }
-function tooltipStyle() {
-  return { backgroundColor: "#B85F00", titleColor: "#FFFFFF", bodyColor: "#FFFFFF", borderColor: "#E8830C", borderWidth: 1, padding: 12, cornerRadius: 8 };
+function sumBy(data, keyFn, valFn) {
+  const out = {};
+  data.forEach((f) => {
+    const k = keyFn(f);
+    if (k === null) return;
+    out[k] = (out[k] || 0) + valFn(f);
+  });
+  return out;
 }
-function horasEntre(inicio, fin) {
-  const hi = norm(inicio), hf = norm(fin);
-  if (!hi || !hf) return 0;
-  const toMin = (s) => {
-    const p = s.split(":");
-    if (p.length < 2) return null;
-    return parseInt(p[0]) * 60 + parseInt(p[1]);
-  };
-  let a = toMin(hi), b = toMin(hf);
-  if (a === null || b === null) return 0;
-  if (b < a) b += 24 * 60; // cruza medianoche
-  return (b - a) / 60;
+function hexRgba(hex, a) {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
+}
+function topN(obj, n, agrupar = true) {
+  const arr = Object.entries(obj).sort((a, b) => b[1] - a[1]);
+  const top = arr.slice(0, n);
+  if (agrupar && arr.length > n) {
+    const resto = arr.slice(n).reduce((a, e) => a + e[1], 0);
+    if (resto > 0) top.push(["Otros", resto]);
+  }
+  return top;
+}
+const argmax = (arr) => arr.reduce((bi, v, i) => (v > arr[bi] ? i : bi), 0);
+const argmin = (arr) => arr.reduce((bi, v, i) => (v < arr[bi] ? i : bi), 0);
+
+/* Turno: la fecha tiene hora. Turno Día = 06:00–17:59, Turno Noche = 18:00–05:59 */
+function getTurno(fechaStr) {
+  const s = norm(fechaStr);
+  if (!s) return "Sin turno";
+  const m = s.match(/(\d{1,2}):(\d{2})/);
+  if (!m) return "Sin turno";
+  const h = parseInt(m[1]);
+  return (h >= 6 && h < 18) ? "DIA" : "NOCHE";
+}
+/* Día: extrae YYYY-MM-DD */
+function getDia(fechaStr) {
+  const s = norm(fechaStr);
+  if (!s) return "Sin fecha";
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+  return s.split(" ")[0];
 }
 
 async function cargarHoja(nombre) {
@@ -65,642 +100,431 @@ async function cargarHoja(nombre) {
     if (data.length === 0) seguir = false;
     else { todos = todos.concat(data); desde += TAMANO; if (data.length < TAMANO) seguir = false; }
   }
-  return todos.map(r => r.data);
+  return todos.map((r) => r.data);
 }
 
-// RENDER
-function renderBar(id, labels, data, color) {
-  const ctx = document.getElementById(id); if (!ctx) return;
-  if (charts[id]) charts[id].destroy();
-  charts[id] = new Chart(ctx, {
-    type: "bar",
-    data: { labels, datasets: [{ data, backgroundColor: color || COLORS.primary, borderRadius: 6, borderSkipped: false, maxBarThickness: 80, categoryPercentage: 0.7, barPercentage: 0.9 }] },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { display: false }, tooltip: tooltipStyle(),
-        datalabels: { anchor: "end", align: "top", formatter: v => Number(v).toLocaleString("es-PE", { maximumFractionDigits: 1 }) } },
-      scales: {
-        x: { ticks: { color: COLORS.textDim, font: { family: "Inter", size: 10 } }, grid: { display: false } },
-        y: { beginAtZero: true, ticks: { color: COLORS.textDim }, grid: { color: "rgba(220, 224, 230, 0.7)" }, suggestedMax: Math.max(...data) * 1.15 }
-      }
-    }
-  });
+/* ---------- Plugins ---------- */
+const centerText = {
+  id: "centerText",
+  afterDraw(chart, _args, opts) {
+    if (!opts || !opts.title) return;
+    const { ctx, chartArea: a } = chart;
+    const x = (a.left + a.right) / 2, y = (a.top + a.bottom) / 2;
+    ctx.save();
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillStyle = C.text; ctx.font = "700 26px Sora, sans-serif";
+    ctx.fillText(opts.title, x, y - 8);
+    ctx.fillStyle = C.dim; ctx.font = "500 11px 'IBM Plex Sans', sans-serif";
+    ctx.fillText(opts.sub || "", x, y + 16);
+    ctx.restore();
+  },
+};
+const avgLine = {
+  id: "avgLine",
+  afterDatasetsDraw(chart, _args, opts) {
+    if (!opts || opts.value === undefined || opts.value === null) return;
+    const y = chart.scales.y.getPixelForValue(opts.value);
+    const { left, right, top, bottom } = chart.chartArea;
+    if (y < top || y > bottom) return;
+    const ctx = chart.ctx;
+    ctx.save();
+    ctx.setLineDash([5, 4]); ctx.strokeStyle = C.orange; ctx.lineWidth = 1.25;
+    ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(right, y); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.font = "600 10.5px 'IBM Plex Sans', sans-serif";
+    const w = ctx.measureText(opts.label).width + 16, h = 20;
+    const x = right - w, ty = Math.max(top, y - h - 5);
+    ctx.fillStyle = "rgba(16, 18, 23, 0.95)"; ctx.strokeStyle = C.orange; ctx.lineWidth = 1;
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(x, ty, w, h, 6); else ctx.rect(x, ty, w, h);
+    ctx.fill(); ctx.stroke();
+    ctx.fillStyle = C.orange; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText(opts.label, x + w / 2, ty + h / 2 + 0.5);
+    ctx.restore();
+  },
+};
+
+function tooltipStyle() {
+  return {
+    backgroundColor: "#070B16", titleColor: C.text, bodyColor: C.text,
+    borderColor: "#27345A", borderWidth: 1, padding: 10, cornerRadius: 8, boxPadding: 4,
+    callbacks: {
+      label: (c) => {
+        const v = typeof c.parsed === "number" ? c.parsed : c.chart.options.indexAxis === "y" ? c.parsed.x : c.parsed.y;
+        return ` ${c.dataset.label ? c.dataset.label + ": " : c.label ? c.label + ": " : ""}${fmt(v, 2)}`;
+      },
+    },
+  };
 }
-function renderHBar(id, labels, data, color) {
-  const ctx = document.getElementById(id); if (!ctx) return;
-  if (charts[id]) charts[id].destroy();
-  const wrap = ctx.parentElement;
-  if (labels.length > 12) { wrap.style.maxHeight = "500px"; wrap.style.overflowY = "auto"; ctx.style.height = labels.length * 34 + "px"; ctx.style.maxHeight = "none"; }
-  charts[id] = new Chart(ctx, {
-    type: "bar",
-    data: { labels, datasets: [{ data, backgroundColor: color || COLORS.primary, borderRadius: 6, borderSkipped: false }] },
-    options: {
-      indexAxis: "y", responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { display: false }, tooltip: tooltipStyle(),
-        datalabels: { anchor: "end", align: "right", formatter: v => Number(v).toLocaleString("es-PE", { maximumFractionDigits: 1 }) } },
-      scales: {
-        x: { beginAtZero: true, ticks: { color: COLORS.textDim }, grid: { color: "rgba(220, 224, 230, 0.7)" } },
-        y: { ticks: { color: COLORS.primaryDark, font: { family: "Inter", size: 10 } }, grid: { display: false } }
-      }
-    }
-  });
+function mount(id, config) {
+  const canvas = $(id);
+  if (!canvas) return;
+  if (charts[id]) { charts[id].destroy(); delete charts[id]; }
+  const vacio = !config.data.labels || config.data.labels.length === 0;
+  canvas.parentElement.classList.toggle("is-empty", vacio);
+  if (vacio) return;
+  charts[id] = new Chart(canvas, config);
 }
-function renderDoughnut(id, labels, data) {
-  const ctx = document.getElementById(id); if (!ctx) return;
-  if (charts[id]) charts[id].destroy();
-  charts[id] = new Chart(ctx, {
-    type: "doughnut",
-    data: { labels, datasets: [{ data, backgroundColor: PALETTE.slice(0, labels.length), borderColor: "#FFFFFF", borderWidth: 3 }] },
+function gradV(c1, c2) {
+  return (ctx) => {
+    const a = ctx.chart.chartArea;
+    if (!a) return c1;
+    const g = ctx.chart.ctx.createLinearGradient(0, a.top, 0, a.bottom);
+    g.addColorStop(0, c1); g.addColorStop(1, c2);
+    return g;
+  };
+}
+function gradH(c1, c2) {
+  return (ctx) => {
+    const a = ctx.chart.chartArea;
+    if (!a) return c1;
+    const g = ctx.chart.ctx.createLinearGradient(a.left, 0, a.right, 0);
+    g.addColorStop(0, c1); g.addColorStop(1, c2);
+    return g;
+  };
+}
+const scaleX = () => ({
+  grid: { display: false }, border: { color: "#1B2745" },
+  ticks: { color: C.dim, maxRotation: 0, autoSkipPadding: 14 },
+});
+const scaleY = (max) => ({
+  beginAtZero: true, suggestedMax: max, grid: { color: C.grid }, border: { display: false },
+  ticks: { color: C.faint, callback: (v) => fmt(v), maxTicksLimit: 6 },
+});
+const labelBase = {
+  color: C.text, font: { family: "'IBM Plex Sans', sans-serif", weight: "600", size: 10.5 },
+};
+
+/* ---------- Gráficos ---------- */
+function renderColumns(id, labels, data, { decimals = 0, avg = null, avgLabel = "" } = {}) {
+  const max = Math.max(...data, 0);
+  mount(id, {
+    type: "bar",
+    data: {
+      labels,
+      datasets: [{
+        data, borderRadius: { topLeft: 7, topRight: 7 }, borderSkipped: false, maxBarThickness: 54,
+        backgroundColor: gradV("#FFD98A", "#C67C0E"),
+        hoverBackgroundColor: gradV("#FFE7B0", "#E8A224"),
+      }],
+    },
     options: {
-      responsive: true, maintainAspectRatio: false, cutout: "65%",
-      animation: { duration: 1000, easing: "easeOutQuart" },
+      responsive: true, maintainAspectRatio: false, layout: { padding: { top: 14 } },
       plugins: {
-        legend: { position: "bottom", labels: { color: COLORS.textDim, font: { family: "Inter", size: 11 }, padding: 12, usePointStyle: true, boxWidth: 8 } },
         tooltip: tooltipStyle(),
-        datalabels: { color: "#FFFFFF", anchor: "center", align: "center",
-          formatter: (v, ctx) => { const t = ctx.dataset.data.reduce((a, b) => a + Number(b), 0); const p = t > 0 ? (Number(v) / t) * 100 : 0; return p >= 4 ? v : ""; } }
-      }
-    }
+        datalabels: { ...labelBase, display: labels.length <= 14, anchor: "end", align: "end", offset: 3, formatter: (v) => fmt(v, decimals) },
+        avgLine: avg === null ? {} : { value: avg, label: avgLabel },
+      },
+      scales: { x: scaleX(), y: scaleY(max * 1.22) },
+    },
+    plugins: [avgLine],
   });
 }
-function renderLine(id, labels, datasets) {
-  const ctx = document.getElementById(id); if (!ctx) return;
-  if (charts[id]) charts[id].destroy();
-  charts[id] = new Chart(ctx, {
-    type: "line",
-    data: { labels, datasets },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { position: "bottom", labels: { color: COLORS.textDim, font: { family: "Inter", size: 11 }, usePointStyle: true, boxWidth: 8 } },
-        tooltip: tooltipStyle(),
-        datalabels: { display: true, align: "top", anchor: "end", offset: 4, color: "#B85F00", font: { family: "Inter", size: 10, weight: "600" }, formatter: v => Number(v).toLocaleString("es-PE", { maximumFractionDigits: 0 }) } },
-      scales: {
-        x: { ticks: { color: COLORS.textDim, font: { family: "Inter", size: 10 } }, grid: { display: false } },
-        y: { beginAtZero: true, ticks: { color: COLORS.textDim }, grid: { color: "rgba(220, 224, 230, 0.7)" } }
-      }
-    }
-  });
+
+/* ---------- Plantillas ---------- */
+function heroCard({ title, value, unit, badge, note }) {
+  return `
+    <article class="card hero span-4">
+      <span class="eyebrow">Indicador principal</span>
+      <h3>${title}</h3>
+      <div class="hero-val">${value}<small>${unit}</small></div>
+      <p class="hero-note">${note}</p>
+      <span class="pill pill-orange">${badge}</span>
+    </article>`;
 }
-function agruparYRender(data, id, columna, tipo, color) {
+function kpiCard({ icon, tone, title, value, unit, pct, barLabel, foot }) {
+  return `
+    <article class="card kpi tone-${tone} span-4">
+      <div class="kpi-head"><span class="kpi-ico"><i class="fas ${icon}"></i></span><h3>${title}</h3></div>
+      <div class="kpi-val">${value}<small>${unit}</small></div>
+      <div class="bar"><i style="width:${clamp(pct)}%"></i></div>
+      <div class="kpi-foot"><span>${barLabel}</span><b>${fmt(pct, 1)}%</b></div>
+      <p class="kpi-note">${foot}</p>
+    </article>`;
+}
+function plotCard(id, titulo, sub, span, size = "") {
+  return `
+    <article class="card span-${span}">
+      <div class="card-head"><h3>${titulo}</h3><p>${sub}</p></div>
+      <div class="plot ${size}"><canvas id="${id}"></canvas>
+        <div class="plot-empty"><i class="fas fa-chart-simple"></i><span>Sin datos para mostrar</span></div></div>
+    </article>`;
+}
+function slotCard(id, titulo, sub, span, inner = "") {
+  return `
+    <article class="card span-${span}">
+      <div class="card-head"><h3>${titulo}</h3><p>${sub}</p></div>
+      <div id="${id}" class="${inner}"></div>
+    </article>`;
+}
+function footCard(key, texto) {
+  return `
+    <footer class="card foot span-12">
+      <div><h4>Metodología y fuentes</h4><p id="${key}Nota">${texto}</p></div>
+      <div class="foot-side">
+        <span class="foot-ref">Origen: <b id="${key}Origen">Supabase</b></span>
+        <button type="button" class="btn-export js-export"><i class="fas fa-file-arrow-down"></i> Exportar CSV</button>
+      </div>
+    </footer>`;
+}
+function tabla(encabezados, filas) {
+  return `<div class="tbl-wrap"><table class="tbl"><thead><tr>${encabezados
+    .map((h) => `<th class="${h.num ? "num" : ""}">${h.t}</th>`).join("")}</tr></thead><tbody>${
+    filas.map((f) => `<tr>${f.map((c, i) => `<td class="${encabezados[i].num ? "num" : ""} ${i === 0 ? "name" : ""}">${c}</td>`).join("")}</tr>`).join("")
+  }</tbody></table></div>`;
+}
+
+function llenarSelect(id, data, columna, etiquetaTodos) {
+  const select = $(id);
+  if (!select) return;
+  const actual = select.value;
+  select.innerHTML = `<option value="">${etiquetaTodos}</option>`;
   if (!columna) return;
-  const conteo = {};
-  data.forEach(f => { const v = norm(f[columna]) || "Sin dato"; conteo[v] = (conteo[v] || 0) + 1; });
-  const entries = Object.entries(conteo).sort((a, b) => b[1] - a[1]);
-  const labels = entries.map(e => e[0]);
-  const valores = entries.map(e => e[1]);
-  const ctx = document.getElementById(id);
-  if (!ctx) return;
-  if (charts[id]) {
-    charts[id].data.labels = labels;
-    charts[id].data.datasets[0].data = valores;
-    charts[id].update();
-    return;
-  }
-  if (tipo === "bar") renderBar(id, labels, valores, color);
-  else if (tipo === "hbar") renderHBar(id, labels, valores, color);
-  else renderDoughnut(id, labels, valores);
-}
-function llenarSelect(id, data, columna) {
-  const select = document.getElementById(id);
-  if (!select || !columna) return;
-  const labelInicial = select.dataset.label || select.options[0]?.text || "Opción";
-  select.dataset.label = labelInicial;
-  const valorActual = select.value;
-  const valores = [...new Set(data.map(f => norm(f[columna])).filter(v => v !== ""))];
-  select.innerHTML = `<option value="">${labelInicial}</option>`;
-  valores.sort().forEach(v => {
+  const valores = [...new Set(data.map((f) => norm(f[columna])).filter((v) => v !== ""))];
+  valores.sort((a, b) => a.localeCompare(b, "es", { numeric: true }));
+  valores.forEach((v) => {
     const opt = document.createElement("option");
     opt.value = v; opt.textContent = v;
     select.appendChild(opt);
   });
-  if (valorActual && valores.includes(valorActual)) select.value = valorActual;
-}
-function marcarSegmentadorActivo(select) {
-  if (!select) return;
-  if (select.value) select.classList.add("activo");
-  else select.classList.remove("activo");
-}
-function crearKPI(icono, clase, titulo, valor, sub) {
-  return `<div class="kpi-card"><div class="kpi-icon-circle ${clase}"><i class="fas ${icono}"></i></div>
-    <div class="kpi-content"><span class="kpi-title">${titulo}</span><span class="kpi-main">${valor}</span><span class="kpi-trend">${sub}</span></div></div>`;
-}
-function crearChart(id, icono, titulo, full = false) {
-  return `<div class="chart-exec-card ${full ? "chart-full" : ""}"><div class="chart-exec-header"><i class="fas ${icono} chart-icon"></i><h3>${titulo}</h3></div><canvas id="${id}"></canvas></div>`;
-}
-function crearChartDonut(id, icono, titulo) {
-  return `<div class="chart-exec-card"><div class="chart-exec-header"><i class="fas ${icono} chart-icon"></i><h3>${titulo}</h3></div><div class="chart-doughnut-wrapper"><canvas id="${id}"></canvas></div></div>`;
+  if (actual && valores.includes(actual)) select.value = actual;
 }
 
-// ============ RESUMEN ============
-function renderResumen() {
-  const data = data_mant;
-  const cTurno = col(data, "TURNO");
-  const cTipo = col(data, "TIPO");
-  const cSistema = col(data, "SISTEMA");
-  const cFecha = col(data, "FECHA");
-  const cEstado = col(data, "ESTADO DEL EQUIPO AL FINALIZAR");
-  const cEquipo = col(data, "EQUIPO INTERVENIDO");
+/* ---------- Esqueleto ---------- */
+function construirLayout() {
+  $("gridViajes").innerHTML = [
+    `<div class="contents" id="kpiViajes"></div>`,
+    plotCard("gViajesDia", "Nro de Viajes — Turno Día", "Distribución de viajes por equipo (06:00–17:59)", 6, "tall"),
+    plotCard("gViajesNoche", "Nro de Viajes — Turno Noche", "Distribución de viajes por equipo (18:00–05:59)", 6, "tall"),
+    slotCard("tablaDia", "Faltas Turno Día", "Equipo · Descripción (motivo)", 6),
+    slotCard("tablaNoche", "Faltas Turno Noche", "Equipo · Descripción (motivo)", 6),
+    footCard("viajes", ""),
+  ].join("");
+}
 
-  ["rTurno","rTipo","rSistema","rFecha"].forEach(id => {
-    if (charts[id]) { charts[id].destroy(); delete charts[id]; }
+function resolverColumnas() {
+  const d = state.transporte;
+  cols.fecha = col(d, "Fecha");
+  cols.equipo = col(d, "Equipo");
+  cols.viajes = col(d, "viajes");
+  cols.tmh = col(d, "TMH");
+  cols.obs = col(d, "Observaciones");
+  cols.ruta = col(d, "RUTA");
+  cols.tipoMat = col(d, "TipoMaterial");
+}
+
+/* ---------- Render ---------- */
+function renderViajes(data) {
+  // Enriquecer cada fila con Turno y Día calculados
+  data = data.map((f) => ({
+    ...f,
+    _turno: getTurno(f[cols.fecha]),
+    _dia: getDia(f[cols.fecha]),
+  }));
+
+  // KPIs
+  let viajes = 0, tmh = 0;
+  const equipos = new Set();
+  data.forEach((f) => {
+    viajes += num(f[cols.viajes]);
+    tmh += num(f[cols.tmh]);
+    const eq = norm(f[cols.equipo]);
+    if (eq) equipos.add(eq);
   });
 
-  const total = data.length;
-  const dia = data.filter(f => norm(f[cTurno]).toLowerCase() === "día" || norm(f[cTurno]).toLowerCase() === "dia").length;
-  const noche = data.filter(f => norm(f[cTurno]).toLowerCase() === "noche").length;
-  const operativos = data.filter(f => norm(f[cEstado]).toLowerCase().startsWith("operativo")).length;
-  const inoperativos = data.filter(f => norm(f[cEstado]).toLowerCase().startsWith("inoperativo")).length;
-  const equiposUnicos = new Set(data.map(f => norm(f[cEquipo])).filter(v => v)).size;
+  const turnoDia = data.filter((f) => f._turno === "DIA");
+  const turnoNoche = data.filter((f) => f._turno === "NOCHE");
+  const viajesDia = turnoDia.reduce((a, f) => a + num(f[cols.viajes]), 0);
+  const viajesNoche = turnoNoche.reduce((a, f) => a + num(f[cols.viajes]), 0);
 
-  document.getElementById("kpiResumen").innerHTML = `
-    ${crearKPI("fa-tools", "", "Total Intervenciones", total, "Registros")}
-    ${crearKPI("fa-sun", "icon-gold", "Turno Día", dia, `${((dia/total)*100 || 0).toFixed(1)}%`)}
-    ${crearKPI("fa-moon", "icon-orange", "Turno Noche", noche, `${((noche/total)*100 || 0).toFixed(1)}%`)}
-    ${crearKPI("fa-check-circle", "", "Operativos", operativos, "Al finalizar")}
-    ${crearKPI("fa-exclamation-triangle", "icon-orange", "Inoperativos", inoperativos, "Al finalizar")}
-    ${crearKPI("fa-truck", "icon-gold", "Equipos Únicos", equiposUnicos, "Intervenidos")}
-  `;
+  $("kpiViajes").innerHTML = [
+    heroCard({
+      title: "Tonelaje total (TMH)", value: fmt(tmh, 1), unit: "t",
+      note: `${fmt(data.length)} registros · ${fmt(equipos.size)} volquetes en operación`,
+      badge: `Día ${fmt(viajesDia)} · Noche ${fmt(viajesNoche)} viajes`,
+    }),
+    kpiCard({
+      icon: "fa-route", tone: "blue", title: "N° de Viajes", value: fmt(viajes), unit: "",
+      pct: 100, barLabel: "Total del periodo",
+      foot: `${fmt(data.length ? viajes / data.length : 0, 2)} viajes por registro`,
+    }),
+    kpiCard({
+      icon: "fa-truck", tone: "green", title: "Volquetes en Uso", value: fmt(equipos.size), unit: "",
+      pct: 100, barLabel: "Equipos distintos",
+      foot: `${fmt(viajes / (equipos.size || 1), 1)} viajes por volquete`,
+    }),
+  ].join("");
 
-  document.getElementById("chartsResumen").innerHTML = `
-    ${crearChartDonut("rTurno", "fa-clock", "Intervenciones por Turno")}
-    ${crearChartDonut("rTipo", "fa-layer-group", "Intervenciones por Tipo")}
-    ${crearChart("rSistema", "fa-cog", "Intervenciones por Sistema", true)}
-    <div class="chart-exec-card chart-full">
-      <div class="chart-exec-header"><i class="fas fa-calendar chart-icon"></i><h3>Intervenciones por Fecha</h3></div>
-      <canvas id="rFecha"></canvas>
-    </div>
-  `;
+  // Gráfico Día
+  const porEquipoDia = sumBy(turnoDia, (f) => norm(f[cols.equipo]) || "Sin equipo", (f) => num(f[cols.viajes]));
+  const arrDia = Object.entries(porEquipoDia).sort((a, b) => b[1] - a[1]);
+  renderColumns("gViajesDia", arrDia.map((e) => e[0]), arrDia.map((e) => e[1]), { decimals: 0 });
 
-  requestAnimationFrame(() => {
-    agruparYRender(data, "rTurno", cTurno, "doughnut");
-    agruparYRender(data, "rTipo", cTipo, "doughnut");
-    agruparYRender(data, "rSistema", cSistema, "hbar", COLORS.primary);
+  // Gráfico Noche
+  const porEquipoNoche = sumBy(turnoNoche, (f) => norm(f[cols.equipo]) || "Sin equipo", (f) => num(f[cols.viajes]));
+  const arrNoche = Object.entries(porEquipoNoche).sort((a, b) => b[1] - a[1]);
+  renderColumns("gViajesNoche", arrNoche.map((e) => e[0]), arrNoche.map((e) => e[1]), { decimals: 0 });
+
+  // Tablas "Faltas": equipos con 0 viajes u observaciones registradas
+  const faltasDia = detectarFaltas(turnoDia, equipos);
+  const faltasNoche = detectarFaltas(turnoNoche, equipos);
+
+  $("tablaDia").innerHTML = faltasDia.length
+    ? tabla([{ t: "Equipo" }, { t: "Descripción" }], faltasDia.map((f) => [f.equipo, f.motivo]))
+    : `<div class="plot-empty" style="display:flex;position:static;min-height:120px"><i class="fas fa-check-circle"></i><span>Sin faltas registradas</span></div>`;
+
+  $("tablaNoche").innerHTML = faltasNoche.length
+    ? tabla([{ t: "Equipo" }, { t: "Descripción" }], faltasNoche.map((f) => [f.equipo, f.motivo]))
+    : `<div class="plot-empty" style="display:flex;position:static;min-height:120px"><i class="fas fa-check-circle"></i><span>Sin faltas registradas</span></div>`;
+
+  $("viajesNota").textContent =
+    `Datos de la hoja TRANSPORTE (${fmt(data.length)} registros en el filtro actual). ` +
+    `El turno se calcula a partir de la hora de la columna "Fecha": Día = 06:00–17:59, Noche = 18:00–05:59. ` +
+    `La tabla "Faltas" lista equipos que no registraron viajes en el turno correspondiente dentro del día filtrado.`;
+}
+
+function detectarFaltas(dataTurno, todosEquipos) {
+  const equiposConViajes = new Set(dataTurno.map((f) => norm(f[cols.equipo])).filter((v) => v));
+  const faltas = [];
+
+  // Equipos del universo que no aparecen en este turno
+  todosEquipos.forEach((eq) => {
+    if (!equiposConViajes.has(eq)) {
+      faltas.push({ equipo: eq, motivo: "Sin viajes registrados en este turno" });
+    }
   });
 
-  if (cFecha) {
-    const porFecha = {};
-    data.forEach(f => {
-      const raw = norm(f[cFecha]);
-      if (!raw) return;
-      const fecha = raw.split(" ")[0];
-      porFecha[fecha] = (porFecha[fecha] || 0) + 1;
+  // Filas con observaciones que no sean "OK"
+  dataTurno.forEach((f) => {
+    const obs = norm(f[cols.obs]).toUpperCase();
+    if (obs && obs !== "OK") {
+      faltas.push({ equipo: norm(f[cols.equipo]) || "-", motivo: truncar(obs, 60) });
+    }
+  });
+
+  return faltas;
+}
+
+/* ---------- Filtros ---------- */
+function prepararFiltros() {
+  const d = state.transporte;
+  // Rellenar select de Día (único)
+  const selectDia = $("filterDiaV");
+  if (selectDia) {
+    const dias = [...new Set(d.map((f) => getDia(f[cols.fecha])).filter((v) => v && v !== "Sin fecha"))];
+    dias.sort();
+    selectDia.innerHTML = `<option value="">Todos</option>`;
+    dias.forEach((v) => {
+      const opt = document.createElement("option"); opt.value = v; opt.textContent = v; selectDia.appendChild(opt);
     });
-    const keys = Object.keys(porFecha).sort();
-    renderLine("rFecha", keys, [{
-      label: "Intervenciones", data: keys.map(k => porFecha[k]),
-      borderColor: COLORS.primary, backgroundColor: "rgba(232, 131, 12, 0.15)",
-      borderWidth: 3, tension: 0.4, pointRadius: 5, fill: true
-    }]);
   }
-
-  llenarSelect("filterTurnoR", data, cTurno);
-  llenarSelect("filterTipoR", data, cTipo);
-  llenarSelect("filterSistemaR", data, cSistema);
-
-  ["filterTurnoR","filterTipoR","filterSistemaR"].forEach(id => {
-    const sel = document.getElementById(id);
-    if (sel && !sel.dataset.listener) {
-      sel.addEventListener("change", () => { marcarSegmentadorActivo(sel); aplicarFiltrosResumen(); });
-      sel.dataset.listener = "1";
-    }
-    marcarSegmentadorActivo(sel);
-  });
+  // Select Turno
+  const selectTurno = $("filterTurnoV");
+  if (selectTurno) {
+    selectTurno.innerHTML = `<option value="">Todos</option><option value="DIA">Día</option><option value="NOCHE">Noche</option>`;
+  }
+  // Select Equipo
+  llenarSelect("filterEquipoV", d, cols.equipo, "Todos");
 }
 
-function aplicarFiltrosResumen() {
-  const t = document.getElementById("filterTurnoR").value;
-  const tp = document.getElementById("filterTipoR").value;
-  const s = document.getElementById("filterSistemaR").value;
-  const cTurno = col(data_mant, "TURNO");
-  const cTipo = col(data_mant, "TIPO");
-  const cSistema = col(data_mant, "SISTEMA");
-  const filtrado = data_mant.filter(f => {
-    if (t && norm(f[cTurno]) !== t) return false;
-    if (tp && norm(f[cTipo]) !== tp) return false;
-    if (s && norm(f[cSistema]) !== s) return false;
+function aplicar() {
+  const fDia = $("filterDiaV").value;
+  const fTurno = $("filterTurnoV").value;
+  const fEquipo = $("filterEquipoV").value;
+
+  ["filterDiaV","filterTurnoV","filterEquipoV"].forEach((id) => $(id).classList.toggle("is-active", !!$(id).value));
+
+  const filtrado = state.transporte.filter((f) => {
+    const dia = getDia(f[cols.fecha]);
+    const turno = getTurno(f[cols.fecha]);
+    if (fDia && dia !== fDia) return false;
+    if (fTurno && turno !== fTurno) return false;
+    if (fEquipo && norm(f[cols.equipo]) !== fEquipo) return false;
     return true;
   });
-  const backup = data_mant; data_mant = filtrado; renderResumen(); data_mant = backup;
+
+  ultimo = filtrado;
+  renderViajes(filtrado);
+
+  const activos = [fDia, fTurno, fEquipo].filter(Boolean).length;
+  const badge = $("badgeViajes");
+  badge.textContent = activos;
+  badge.hidden = activos === 0;
+
+  // Chips
+  let viajes = 0, tmh = 0;
+  filtrado.forEach((f) => { viajes += num(f[cols.viajes]); tmh += num(f[cols.tmh]); });
+  $("chipAlcance").textContent = `${fmt(filtrado.length)} registros`;
+  $("chipTonelaje").textContent = `${fmt(tmh, 1)} t`;
 }
 
-// ============ EQUIPOS ============
-function renderEquipos() {
-  const data = data_mant;
-  const cEquipo = col(data, "EQUIPO INTERVENIDO");
-  const cEstado = col(data, "ESTADO DEL EQUIPO AL FINALIZAR");
-  const cHorometro = col(data, "HORÓMETRO O KILOMETRAJE INICIAL");
-  const cTurno = col(data, "TURNO");
-  const cTipo = col(data, "TIPO");
-  const cSistema = col(data, "SISTEMA");
-
-  ["eTopEquipo","eEstado","eHorometro","eTipoEquipo"].forEach(id => {
-    if (charts[id]) { charts[id].destroy(); delete charts[id]; }
-  });
-
-  const porEquipo = {};
-  data.forEach(f => {
-    const eq = norm(f[cEquipo]) || "Sin equipo";
-    porEquipo[eq] = (porEquipo[eq] || 0) + 1;
-  });
-  const arrEq = Object.entries(porEquipo).sort((a, b) => b[1] - a[1]);
-  const eqTop = arrEq[0] ? arrEq[0][0] : "-";
-
-  const operativos = data.filter(f => norm(f[cEstado]).toLowerCase().startsWith("operativo")).length;
-  const inoperativos = data.filter(f => norm(f[cEstado]).toLowerCase().startsWith("inoperativo")).length;
-
-  document.getElementById("kpiEquipos").innerHTML = `
-    ${crearKPI("fa-truck", "", "Equipos Únicos", arrEq.length, "En registros")}
-    ${crearKPI("fa-fire", "icon-orange", "Equipo + Intervenido", eqTop, `${arrEq[0] ? arrEq[0][1] : 0} veces`)}
-    ${crearKPI("fa-check-circle", "icon-gold", "Operativos", operativos, "Al finalizar")}
-    ${crearKPI("fa-exclamation-triangle", "icon-orange", "Inoperativos", inoperativos, "Al finalizar")}
-  `;
-
-  document.getElementById("chartsEquipos").innerHTML = `
-    ${crearChart("eTopEquipo", "fa-truck", "Equipos con más Intervenciones", true)}
-    ${crearChartDonut("eEstado", "fa-clipboard-check", "Estado del Equipo al Finalizar")}
-    ${crearChart("eHorometro", "fa-tachometer-alt", "Horómetro Promedio por Equipo")}
-    ${crearChart("eTipoEquipo", "fa-layer-group", "Intervenciones por Tipo de Equipo")}
-  `;
-
-  renderHBar("eTopEquipo", arrEq.slice(0, 12).map(e => e[0]), arrEq.slice(0, 12).map(e => e[1]), COLORS.primary);
-
-  const porEstado = {};
-  data.forEach(f => {
-    let est = norm(f[cEstado]) || "Sin estado";
-    est = est.substring(0, 30);
-    porEstado[est] = (porEstado[est] || 0) + 1;
-  });
-  const arrEst = Object.entries(porEstado).sort((a, b) => b[1] - a[1]);
-  requestAnimationFrame(() => {
-    renderDoughnut("eEstado", arrEst.map(e => e[0]), arrEst.map(e => e[1]));
-  });
-
-  // Horómetro promedio por equipo (top 10 más intervenidos)
-  const horometros = {};
-  data.forEach(f => {
-    const eq = norm(f[cEquipo]) || "Sin equipo";
-    const h = num(f[cHorometro]);
-    if (!horometros[eq]) horometros[eq] = { suma: 0, n: 0 };
-    if (h > 0) { horometros[eq].suma += h; horometros[eq].n++; }
-  });
-  const arrHor = arrEq.slice(0, 10).map(([eq]) => {
-    const h = horometros[eq];
-    return [eq, h && h.n > 0 ? h.suma / h.n : 0];
-  });
-  renderBar("eHorometro", arrHor.map(h => h[0].substring(0, 15)), arrHor.map(h => +h[1].toFixed(0)), COLORS.earth);
-
-  const porTipo = {};
-  data.forEach(f => { const t = norm(f[cTipo]) || "Sin tipo"; porTipo[t] = (porTipo[t] || 0) + 1; });
-  const arrTipo = Object.entries(porTipo).sort((a, b) => b[1] - a[1]);
-  renderBar("eTipoEquipo", arrTipo.map(t => t[0]), arrTipo.map(t => t[1]), COLORS.accent);
-
-  llenarSelect("filterTurnoE", data, cTurno);
-  llenarSelect("filterTipoE", data, cTipo);
-  llenarSelect("filterEquipoE", data, cEquipo);
-
-  ["filterTurnoE","filterTipoE","filterEquipoE"].forEach(id => {
-    const sel = document.getElementById(id);
-    if (sel && !sel.dataset.listener) {
-      sel.addEventListener("change", () => { marcarSegmentadorActivo(sel); aplicarFiltrosEquipos(); });
-      sel.dataset.listener = "1";
-    }
-    marcarSegmentadorActivo(sel);
-  });
+/* ---------- Exportar CSV ---------- */
+function exportarCSV() {
+  if (!ultimo.length) return;
+  const cab = Object.keys(ultimo[0]).filter((k) => !k.startsWith("_"));
+  const esc = (v) => {
+    const s = v === null || v === undefined ? "" : String(v);
+    return /[",\n;]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const csv = [cab.map(esc).join(","), ...ultimo.map((r) => cab.map((k) => esc(r[k])).join(","))].join("\n");
+  const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `transporte_${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
-function aplicarFiltrosEquipos() {
-  const t = document.getElementById("filterTurnoE").value;
-  const tp = document.getElementById("filterTipoE").value;
-  const eq = document.getElementById("filterEquipoE").value;
-  const cTurno = col(data_mant, "TURNO");
-  const cTipo = col(data_mant, "TIPO");
-  const cEquipo = col(data_mant, "EQUIPO INTERVENIDO");
-  const filtrado = data_mant.filter(f => {
-    if (t && norm(f[cTurno]) !== t) return false;
-    if (tp && norm(f[cTipo]) !== tp) return false;
-    if (eq && norm(f[cEquipo]) !== eq) return false;
-    return true;
+/* ---------- Eventos ---------- */
+function engancharEventos() {
+  if (listenersReady) return;
+  listenersReady = true;
+
+  ["filterDiaV","filterTurnoV","filterEquipoV"].forEach((id) =>
+    $(id).addEventListener("change", aplicar)
+  );
+  $("clearViajes").addEventListener("click", () => {
+    ["filterDiaV","filterTurnoV","filterEquipoV"].forEach((id) => ($(id).value = ""));
+    aplicar();
   });
-  const backup = data_mant; data_mant = filtrado; renderEquipos(); data_mant = backup;
+  document.querySelectorAll(".js-export").forEach((b) => b.addEventListener("click", exportarCSV));
+  document.querySelectorAll(".js-refresh").forEach((b) =>
+    b.addEventListener("click", async () => {
+      document.querySelectorAll(".js-refresh").forEach((x) => { x.disabled = true; x.classList.add("is-loading"); });
+      try { await cargarTodo(); } catch (err) { console.error(err); }
+      document.querySelectorAll(".js-refresh").forEach((x) => { x.disabled = false; x.classList.remove("is-loading"); });
+    })
+  );
 }
 
-// ============ SISTEMAS ============
-function renderSistemas() {
-  const data = data_mant;
-  const cSistema = col(data, "SISTEMA");
-  const cFalla = col(data, "FALLA O EVENTO REPORTADO");
-  const cRepuestos = col(data, "REPUESTOS, COMPONENTES E INSUMOS UTILIZADOS");
-  const cHoraIni = col(data, "HORA INICIAL DE INTERVENCIÓN");
-  const cHoraFin = col(data, "HORA FINAL DE INTERVENCIÓN");
-  const cTurno = col(data, "TURNO");
-
-  ["sSistema","sTiempoProm","sFalla","sRepuestos"].forEach(id => {
-    if (charts[id]) { charts[id].destroy(); delete charts[id]; }
-  });
-
-  // Tiempo de intervención por sistema
-  const tiempoSistema = {};
-  data.forEach(f => {
-    const s = norm(f[cSistema]) || "Sin sistema";
-    const h = horasEntre(f[cHoraIni], f[cHoraFin]);
-    if (!tiempoSistema[s]) tiempoSistema[s] = { suma: 0, n: 0 };
-    if (h > 0) { tiempoSistema[s].suma += h; tiempoSistema[s].n++; }
-  });
-  const arrTiempo = Object.entries(tiempoSistema).map(([s, v]) => [s, v.n > 0 ? v.suma / v.n : 0]).sort((a, b) => b[1] - a[1]);
-
-  // Falla más frecuente
-  const porFalla = {};
-  data.forEach(f => {
-    let fal = norm(f[cFalla]) || "Sin falla";
-    fal = fal.split("\n")[0].substring(0, 40);
-    porFalla[fal] = (porFalla[fal] || 0) + 1;
-  });
-  const arrFalla = Object.entries(porFalla).sort((a, b) => b[1] - a[1]);
-
-  // Repuestos más usados
-  const porRep = {};
-  data.forEach(f => {
-    const rep = norm(f[cRepuestos]);
-    if (!rep || rep.toLowerCase() === "ninguno" || rep.toLowerCase() === "n/a") return;
-    rep.split(/[\n,]/).forEach(r => {
-      const limpio = r.trim().substring(0, 30);
-      if (limpio) porRep[limpio] = (porRep[limpio] || 0) + 1;
-    });
-  });
-  const arrRep = Object.entries(porRep).sort((a, b) => b[1] - a[1]);
-
-  const sistUnicos = Object.keys(tiempoSistema).length;
-  const tiempoProm = arrTiempo.length > 0 ? arrTiempo.reduce((a, b) => a + b[1], 0) / arrTiempo.length : 0;
-
-  document.getElementById("kpiSistemas").innerHTML = `
-    ${crearKPI("fa-cog", "", "Sistemas Únicos", sistUnicos, "Intervenidos")}
-    ${crearKPI("fa-hourglass-half", "icon-gold", "Tiempo Prom. Intervención", tiempoProm.toFixed(2) + " h", "Global")}
-    ${crearKPI("fa-bolt", "icon-orange", "Falla + Frecuente", arrFalla[0] ? arrFalla[0][0].substring(0, 22) : "-", arrFalla[0] ? `${arrFalla[0][1]} veces` : "")}
-    ${crearKPI("fa-boxes-packing", "icon-gold", "Repuestos Distintos", arrRep.length, "Usados")}
-  `;
-
-  document.getElementById("chartsSistemas").innerHTML = `
-    ${crearChart("sSistema", "fa-cog", "Intervenciones por Sistema")}
-    ${crearChart("sTiempoProm", "fa-hourglass-half", "Tiempo Promedio por Sistema (horas)")}
-    ${crearChart("sFalla", "fa-bolt", "Top 10 Fallas / Eventos")}
-    ${crearChart("sRepuestos", "fa-boxes-packing", "Top 10 Repuestos más Usados")}
-  `;
-
-  const porSistema = {};
-  data.forEach(f => { const s = norm(f[cSistema]) || "Sin sistema"; porSistema[s] = (porSistema[s] || 0) + 1; });
-  const arrSis = Object.entries(porSistema).sort((a, b) => b[1] - a[1]);
-  renderBar("sSistema", arrSis.map(s => s[0]), arrSis.map(s => s[1]), COLORS.primary);
-
-  renderHBar("sTiempoProm", arrTiempo.map(t => t[0]), arrTiempo.map(t => +t[1].toFixed(2)), COLORS.accent);
-  renderHBar("sFalla", arrFalla.slice(0, 10).map(f => f[0]), arrFalla.slice(0, 10).map(f => f[1]), COLORS.orange);
-  renderHBar("sRepuestos", arrRep.slice(0, 10).map(r => r[0]), arrRep.slice(0, 10).map(r => r[1]), COLORS.primaryDark);
-
-  llenarSelect("filterTurnoS", data, cTurno);
-  llenarSelect("filterSistemaS", data, cSistema);
-
-  ["filterTurnoS","filterSistemaS"].forEach(id => {
-    const sel = document.getElementById(id);
-    if (sel && !sel.dataset.listener) {
-      sel.addEventListener("change", () => { marcarSegmentadorActivo(sel); aplicarFiltrosSistemas(); });
-      sel.dataset.listener = "1";
-    }
-    marcarSegmentadorActivo(sel);
-  });
+/* ---------- Carga ---------- */
+async function cargarTodo() {
+  const t = await cargarHoja("TRANSPORTE");
+  state.transporte = t;
+  resolverColumnas();
+  prepararFiltros();
+  aplicar();
+  $("stRegistros").textContent = fmt(t.length);
+  $("stSync").textContent = new Date().toLocaleTimeString("es-PE", { hour: "2-digit", minute: "2-digit" });
 }
 
-function aplicarFiltrosSistemas() {
-  const t = document.getElementById("filterTurnoS").value;
-  const s = document.getElementById("filterSistemaS").value;
-  const cTurno = col(data_mant, "TURNO");
-  const cSistema = col(data_mant, "SISTEMA");
-  const filtrado = data_mant.filter(f => {
-    if (t && norm(f[cTurno]) !== t) return false;
-    if (s && norm(f[cSistema]) !== s) return false;
-    return true;
-  });
-  const backup = data_mant; data_mant = filtrado; renderSistemas(); data_mant = backup;
-}
-
-// ============ TÉCNICOS ============
-function renderTecnicos() {
-  const data = data_mant;
-  const cTecnico = col(data, "TÉCNICOS RESPONSABLES");
-  const cTurno = col(data, "TURNO");
-  const cTipo = col(data, "TIPO");
-  const cHoraIni = col(data, "HORA INICIAL DE INTERVENCIÓN");
-  const cHoraFin = col(data, "HORA FINAL DE INTERVENCIÓN");
-
-  ["tTecnico","tHoras"].forEach(id => {
-    if (charts[id]) { charts[id].destroy(); delete charts[id]; }
-  });
-
-  const porTecnico = {};
-  data.forEach(f => {
-    const t = norm(f[cTecnico]) || "Sin técnico";
-    porTecnico[t] = (porTecnico[t] || 0) + 1;
-  });
-  const arrTec = Object.entries(porTecnico).sort((a, b) => b[1] - a[1]);
-
-  const horasTec = {};
-  data.forEach(f => {
-    const t = norm(f[cTecnico]) || "Sin técnico";
-    const h = horasEntre(f[cHoraIni], f[cHoraFin]);
-    if (!horasTec[t]) horasTec[t] = 0;
-    horasTec[t] += h;
-  });
-  const arrHorasTec = arrTec.slice(0, 10).map(([t]) => [t, horasTec[t] || 0]);
-
-  document.getElementById("kpiTecnicos").innerHTML = `
-    ${crearKPI("fa-user-cog", "", "Técnicos Activos", arrTec.length, "En registros")}
-    ${crearKPI("fa-trophy", "icon-gold", "Top Técnico", arrTec[0] ? arrTec[0][0] : "-", arrTec[0] ? `${arrTec[0][1]} intervenciones` : "")}
-    ${crearKPI("fa-clock", "icon-orange", "Técnico + Horas", arrHorasTec[0] ? arrHorasTec[0][0] : "-", arrHorasTec[0] ? `${arrHorasTec[0][1].toFixed(1)} h` : "")}
-  `;
-
-  document.getElementById("chartsTecnicos").innerHTML = `
-    ${crearChart("tTecnico", "fa-user-cog", "Intervenciones por Técnico", true)}
-    ${crearChart("tHoras", "fa-clock", "Horas Totales por Técnico (Top 10)")}
-    <div class="chart-exec-card chart-full">
-      <div class="chart-exec-header"><i class="fas fa-list chart-icon"></i><h3>Ranking Detallado</h3></div>
-      <div id="tablaRanking" class="mini-table"></div>
-    </div>
-  `;
-
-  renderHBar("tTecnico", arrTec.map(t => t[0]), arrTec.map(t => t[1]), COLORS.primary);
-  renderBar("tHoras", arrHorasTec.map(t => t[0].substring(0, 15)), arrHorasTec.map(t => +t[1].toFixed(2)), COLORS.accent);
-
-  // Tabla ranking
-  let html = "<table><thead><tr><th>Técnico</th><th>Intervenciones</th><th>Horas Totales</th></tr></thead><tbody>";
-  arrTec.forEach(([t, n]) => {
-    html += `<tr><td><strong>${t}</strong></td><td>${n}</td><td>${(horasTec[t] || 0).toFixed(2)}</td></tr>`;
-  });
-  html += "</tbody></table>";
-  document.getElementById("tablaRanking").innerHTML = html;
-
-  llenarSelect("filterTurnoT", data, cTurno);
-  llenarSelect("filterTipoT", data, cTipo);
-
-  ["filterTurnoT","filterTipoT"].forEach(id => {
-    const sel = document.getElementById(id);
-    if (sel && !sel.dataset.listener) {
-      sel.addEventListener("change", () => { marcarSegmentadorActivo(sel); aplicarFiltrosTecnicos(); });
-      sel.dataset.listener = "1";
-    }
-    marcarSegmentadorActivo(sel);
-  });
-}
-
-function aplicarFiltrosTecnicos() {
-  const t = document.getElementById("filterTurnoT").value;
-  const tp = document.getElementById("filterTipoT").value;
-  const cTurno = col(data_mant, "TURNO");
-  const cTipo = col(data_mant, "TIPO");
-  const filtrado = data_mant.filter(f => {
-    if (t && norm(f[cTurno]) !== t) return false;
-    if (tp && norm(f[cTipo]) !== tp) return false;
-    return true;
-  });
-  const backup = data_mant; data_mant = filtrado; renderTecnicos(); data_mant = backup;
-}
-
-// ============ DETALLE ============
-function renderDetalle() {
-  const data = data_mant;
-  const cFecha = col(data, "FECHA");
-  const cTurno = col(data, "TURNO");
-  const cTipo = col(data, "TIPO");
-  const cEquipo = col(data, "EQUIPO INTERVENIDO");
-  const cSistema = col(data, "SISTEMA");
-  const cHorometro = col(data, "HORÓMETRO O KILOMETRAJE INICIAL");
-  const cHoraIni = col(data, "HORA INICIAL DE INTERVENCIÓN");
-  const cHoraFin = col(data, "HORA FINAL DE INTERVENCIÓN");
-  const cFalla = col(data, "FALLA O EVENTO REPORTADO");
-  const cTrabajos = col(data, "TRABAJOS REALIZADOS");
-  const cRepuestos = col(data, "REPUESTOS, COMPONENTES E INSUMOS UTILIZADOS");
-  const cObs = col(data, "OBSERVACIONES O PENDIENTES");
-  const cEstado = col(data, "ESTADO DEL EQUIPO AL FINALIZAR");
-  const cTecnico = col(data, "TÉCNICOS RESPONSABLES");
-
-  let html = `<table><thead><tr>
-    <th>Fecha</th><th>Turno</th><th>Tipo</th><th>Equipo</th><th>Sistema</th>
-    <th>Horóm.</th><th>Hora Ini.</th><th>Hora Fin.</th><th>Dur.(h)</th>
-    <th>Falla</th><th>Trabajos</th><th>Repuestos</th><th>Obs.</th><th>Estado</th><th>Técnico</th>
-  </tr></thead><tbody>`;
-  data.forEach(f => {
-    let fecha = norm(f[cFecha]); if (fecha.includes(" ")) fecha = fecha.split(" ")[0];
-    const dur = horasEntre(f[cHoraIni], f[cHoraFin]);
-    html += `<tr>
-      <td>${fecha || "-"}</td>
-      <td>${norm(f[cTurno]) || "-"}</td>
-      <td>${norm(f[cTipo]) || "-"}</td>
-      <td><strong>${norm(f[cEquipo]) || "-"}</strong></td>
-      <td>${norm(f[cSistema]) || "-"}</td>
-      <td>${norm(f[cHorometro]) || "-"}</td>
-      <td>${norm(f[cHoraIni]) || "-"}</td>
-      <td>${norm(f[cHoraFin]) || "-"}</td>
-      <td>${dur.toFixed(2)}</td>
-      <td>${norm(f[cFalla]).substring(0, 40) || "-"}</td>
-      <td>${norm(f[cTrabajos]).substring(0, 50) || "-"}</td>
-      <td>${norm(f[cRepuestos]).substring(0, 40) || "-"}</td>
-      <td>${norm(f[cObs]).substring(0, 30) || "-"}</td>
-      <td>${norm(f[cEstado]) || "-"}</td>
-      <td>${norm(f[cTecnico]) || "-"}</td>
-    </tr>`;
-  });
-  html += "</tbody></table>";
-  document.getElementById("tablaDetalle").innerHTML = html;
-
-  llenarSelect("filterTurnoD", data, cTurno);
-  llenarSelect("filterTipoD", data, cTipo);
-  llenarSelect("filterSistemaD", data, cSistema);
-  llenarSelect("filterTecnicoD", data, cTecnico);
-
-  ["filterTurnoD","filterTipoD","filterSistemaD","filterTecnicoD"].forEach(id => {
-    const sel = document.getElementById(id);
-    if (sel && !sel.dataset.listener) {
-      sel.addEventListener("change", () => { marcarSegmentadorActivo(sel); aplicarFiltrosDetalle(); });
-      sel.dataset.listener = "1";
-    }
-    marcarSegmentadorActivo(sel);
-  });
-}
-
-function aplicarFiltrosDetalle() {
-  const t = document.getElementById("filterTurnoD").value;
-  const tp = document.getElementById("filterTipoD").value;
-  const s = document.getElementById("filterSistemaD").value;
-  const tec = document.getElementById("filterTecnicoD").value;
-  const cTurno = col(data_mant, "TURNO");
-  const cTipo = col(data_mant, "TIPO");
-  const cSistema = col(data_mant, "SISTEMA");
-  const cTecnico = col(data_mant, "TÉCNICOS RESPONSABLES");
-  const filtrado = data_mant.filter(f => {
-    if (t && norm(f[cTurno]) !== t) return false;
-    if (tp && norm(f[cTipo]) !== tp) return false;
-    if (s && norm(f[cSistema]) !== s) return false;
-    if (tec && norm(f[cTecnico]) !== tec) return false;
-    return true;
-  });
-  const backup = data_mant; data_mant = filtrado; renderDetalle(); data_mant = backup;
-}
-
-// ============ NAVEGACIÓN ============
-function cambiarSeccion(seccion) {
-  document.querySelectorAll("#dashTabs .tab").forEach(t => t.classList.toggle("active", t.dataset.seccion === seccion));
-  ["resumen","equipos","sistemas","tecnicos","detalle"].forEach(s => {
-    document.getElementById(s).style.display = s === seccion ? "block" : "none";
-  });
-}
-
-// ============ INIT ============
+/* ---------- Inicio ---------- */
 (async function init() {
+  construirLayout();
   try {
-    data_mant = await cargarHoja("MANTENIMIENTO");
-    document.getElementById("loading").style.display = "none";
-    document.getElementById("dashTabs").style.display = "flex";
-    document.getElementById("resumen").style.display = "block";
-
-    if (data_mant.length > 0) {
-      renderResumen();
-      renderEquipos();
-      renderSistemas();
-      renderTecnicos();
-      renderDetalle();
-    }
-
-    document.getElementById("clearResumen").addEventListener("click", () => {
-      document.querySelectorAll("#resumen .filter-select").forEach(s => s.value = "");
-      document.querySelectorAll("#resumen .filter-select").forEach(marcarSegmentadorActivo);
-      renderResumen();
-    });
-    document.getElementById("clearEquipos").addEventListener("click", () => {
-      document.querySelectorAll("#equipos .filter-select").forEach(s => s.value = "");
-      document.querySelectorAll("#equipos .filter-select").forEach(marcarSegmentadorActivo);
-      renderEquipos();
-    });
-    document.getElementById("clearSistemas").addEventListener("click", () => {
-      document.querySelectorAll("#sistemas .filter-select").forEach(s => s.value = "");
-      document.querySelectorAll("#sistemas .filter-select").forEach(marcarSegmentadorActivo);
-      renderSistemas();
-    });
-    document.getElementById("clearTecnicos").addEventListener("click", () => {
-      document.querySelectorAll("#tecnicos .filter-select").forEach(s => s.value = "");
-      document.querySelectorAll("#tecnicos .filter-select").forEach(marcarSegmentadorActivo);
-      renderTecnicos();
-    });
-    document.getElementById("clearDetalle").addEventListener("click", () => {
-      document.querySelectorAll("#detalle .filter-select").forEach(s => s.value = "");
-      document.querySelectorAll("#detalle .filter-select").forEach(marcarSegmentadorActivo);
-      renderDetalle();
-    });
-
-    document.querySelectorAll("#dashTabs .tab").forEach(tab => {
-      tab.addEventListener("click", (e) => {
-        e.preventDefault();
-        cambiarSeccion(tab.dataset.seccion);
-      });
-    });
+    await cargarTodo();
+    $("loading").hidden = true;
+    $("topbar").hidden = false;
+    $("shell").hidden = false;
+    $("viajes").hidden = false;
+    engancharEventos();
   } catch (err) {
     console.error(err);
-    document.getElementById("loading").innerHTML = `<p style="color:#D9620C;">Error al cargar: ${err.message}</p>`;
+    $("loading").innerHTML = `
+      <div class="error-box">
+        <i class="fas fa-triangle-exclamation"></i>
+        <h3>No se pudieron cargar los datos</h3>
+        <p>${err.message || err}</p>
+      </div>`;
   }
 })();

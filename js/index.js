@@ -21,7 +21,6 @@ fileInput.addEventListener('change', function (e) {
         hojasProcesadas = {};
         sheetList.innerHTML = '';
 
-        // Solo procesamos la primera hoja (o la que tenga los encabezados correctos)
         let encontrada = false;
         for (const nombreHoja of workbook.SheetNames) {
             const worksheet = workbook.Sheets[nombreHoja];
@@ -42,7 +41,7 @@ fileInput.addEventListener('change', function (e) {
         }
 
         if (!encontrada) {
-            mostrarMensaje('No se detectó la hoja de mantenimiento. Revisa los encabezados.', 'error');
+            mostrarMensaje('No se detectó la hoja. Revisa los encabezados.', 'error');
             return;
         }
         sheetStatus.style.display = 'block';
@@ -54,10 +53,11 @@ fileInput.addEventListener('change', function (e) {
 function detectarTipo(rows) {
     for (let i = 0; i < Math.min(rows.length, 20); i++) {
         const fila = rows[i].map(c => (c || '').toString().trim().toLowerCase());
-        const tieneEquipo = fila.some(c => c.includes('equipo intervenido'));
-        const tieneTecnicos = fila.some(c => c.includes('técnicos responsables') || c.includes('tecnicos responsables'));
-        const tieneTurno = fila.some(c => c === 'turno');
-        if (tieneEquipo && tieneTecnicos && tieneTurno) return 'MANTENIMIENTO';
+        const tieneFecha = fila.some(c => c === 'fecha');
+        const tieneEquipo = fila.some(c => c === 'equipo');
+        const tieneViajes = fila.some(c => c === 'viajes');
+        const tieneTMH = fila.some(c => c.includes('tmh'));
+        if (tieneFecha && tieneEquipo && tieneViajes && tieneTMH) return 'TRANSPORTE';
     }
     return null;
 }
@@ -67,7 +67,7 @@ function procesarHoja(rows, tipo) {
     let headerIndex = 0;
     for (let i = 0; i < Math.min(rows.length, 20); i++) {
         const fila = rows[i].map(c => (c || '').toString().trim().toLowerCase());
-        if (tipo === 'MANTENIMIENTO' && fila.some(c => c.includes('equipo intervenido'))) { headerIndex = i; break; }
+        if (tipo === 'TRANSPORTE' && fila.includes('equipo') && fila.includes('viajes')) { headerIndex = i; break; }
     }
     const headers = (rows[headerIndex] || []).map((h, i) => {
         let limpio = (h || '').toString().trim().replace(/<br\s*\/?>/gi, ' ').replace(/\s+/g, ' ');
